@@ -23,33 +23,55 @@ from equilibrium import EquilibriumEngine
 def expand_keywords(seed, api_key, n=8, model="gpt-4o-mini"):
     """
     LLM이 seed와 연관된 트렌드 키워드 후보를 제안(탐색).
-    판단이 아니라 '무엇을 볼지' 목록만. 실제 판단은 엔진이 한다.
+    실패 시 에러를 raise하지 않고 (seed, 에러메시지)로 알린다.
+    반환: (keywords_list, error_or_None)
     """
-    import json
-    from openai import OpenAI
-    client = OpenAI(api_key=api_key)
-    prompt = (
-        f"'{seed}' 분야의 현재 트렌드를 다각도로 보려 한다.\n"
-        f"이 분야를 구성하는 세부·연관 검색 키워드를 {n}개 제안하라.\n"
-        "실제로 사람들이 검색할 법한 구체적 용어로. 너무 일반적이거나 "
-        "너무 희귀한 건 제외. seed 자체도 포함.\n"
-        "출력(JSON): {\"keywords\": [\"...\", ...]}"
-    )
-    resp = client.chat.completions.create(
-        model=model, messages=[{"role": "user", "content": prompt}],
-        temperature=0.4)
-    txt = resp.choices[0].message.content
+    import json, re
     try:
-        kws = json.loads(txt).get("keywords", [])
+        from openai import OpenAI
+    except Exception as e:
+        return [seed], f"openai 패키지 없음: {e} (pip install openai)"
+    try:
+        client = OpenAI(api_key=api_key)
+        prompt = (
+            f"'{seed}' 분야의 현재 트렌드를 다각도로 보려 한다.\n"
+            f"이 분야를 구성하는 세부·연관 검색 키워드를 {n}개 제안하라.\n"
+            "실제로 사람들이 검색할 법한 구체적 용어로. seed 자체도 포함.\n"
+            "반드시 JSON만 출력: {\"keywords\": [\"키워드1\", \"키워드2\", ...]}"
+        )
+        resp = client.chat.completions.create(
+            model=model, messages=[{"role": "user", "content": prompt}],
+            temperature=0.4)
+        txt = resp.choices[0].message.content.strip()
+    except Exception as e:
+        return [seed], f"OpenAI 호출 실패: {type(e).__name__}: {e}"
+
+    kws = []
+    txt_clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", txt.strip(),
+                       flags=re.MULTILINE).strip()
+    try:
+        kws = json.loads(txt_clean).get("keywords", [])
     except Exception:
+        quoted = re.findall(r'"([^"]+)"', txt)
+        if quoted:
+            kws = [q for q in quoted if q.lower() != "keywords"]
+        else:
+            for line in txt.splitlines():
+                line = re.sub(r"^[\s\-\*\d\.\)]+", "", line).strip().strip('",[]')
+                if line and len(line) < 40 and "keyword" not in line.lower():
+                    kws.append(line)
+
+    err = None
+    if not kws:
+        err = f"응답 파싱 실패. 원문: {txt[:150]}"
         kws = [seed]
-    # seed 보장 + 중복 제거
-    out = [seed] + [k for k in kws if k != seed]
+    out = [seed] + [k for k in kws if k and k != seed]
     seen, uniq = set(), []
     for k in out:
-        if k not in seen:
+        k = k.strip()
+        if k and k not in seen:
             seen.add(k); uniq.append(k)
-    return uniq[:n]
+    return uniq[:n], err
 
 
 # ── 3) 개별 키워드 국면 판정 ────────────────────────────────
