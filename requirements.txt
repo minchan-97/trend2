@@ -1,0 +1,4 @@
+streamlit>=1.36
+numpy>=1.24
+pytrends>=4.9
+openai>=1.0
