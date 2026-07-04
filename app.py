@@ -107,7 +107,12 @@ with tab_field:
                 from trend_data import fetch_trend
                 # 1) 키워드 확장
                 with st.spinner("연관 키워드 확장 중..."):
-                    keywords = expand_keywords(seed, fkey, n=n_kw)
+                    keywords, kw_err = expand_keywords(seed, fkey, n=n_kw)
+                if kw_err:
+                    st.error(f"키워드 확장 실패 원인: {kw_err}")
+                if len(keywords) <= 1:
+                    st.warning("연관 키워드가 확장되지 않아 seed만 진행합니다. "
+                               "위 오류를 확인하세요.")
                 st.write("**탐색 키워드:**", ", ".join(keywords))
 
                 # 2~3) 각 키워드 트렌드 수집 + 국면 판정
