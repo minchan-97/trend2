@@ -10,7 +10,7 @@ from __future__ import annotations
 import os, pickle, time
 
 
-def fetch_trend(keyword, timeframe="today 3-m", geo=""):
+def fetch_trend(keyword, timeframe="today 12-m", geo=""):
     """
     구글 트렌드에서 키워드 시계열 + 관련 검색어를 받아온다.
     timeframe 예: 'today 3-m'(최근3개월), 'today 12-m', 'now 7-d'
@@ -30,13 +30,16 @@ def fetch_trend(keyword, timeframe="today 3-m", geo=""):
 
     # 관련 검색어(급상승/고정) 개수 → 양적/포화 신호
     rising_count = top_count = 0
+    has_related = False
     try:
         related = py.related_queries()
         rq = related.get(keyword, {})
+        got = False
         if rq.get("rising") is not None:
-            rising_count = len(rq["rising"])
+            rising_count = len(rq["rising"]); got = True
         if rq.get("top") is not None:
-            top_count = len(rq["top"])
+            top_count = len(rq["top"]); got = True
+        has_related = got
     except Exception:
         pass
 
@@ -44,6 +47,7 @@ def fetch_trend(keyword, timeframe="today 3-m", geo=""):
         "keyword": keyword, "timeframe": timeframe, "geo": geo,
         "series": series, "dates": dates,
         "rising_count": rising_count, "top_count": top_count,
+        "has_related": has_related,
         "fetched_at": time.time(),
     }
 
