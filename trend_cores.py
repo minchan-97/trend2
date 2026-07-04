@@ -29,14 +29,40 @@ def _slope(y):
     return float((x * (y - y.mean())).sum() / denom)
 
 
-def extract_signals(series, rising_count=0, top_count=0):
+def _trim_incomplete_tail(y):
+    """
+    구글 트렌드 today N-m의 마지막 며칠은 집계가 덜 돼 낮게 나온다.
+    → 끝에서 급락하는 미집계 구간을 잘라낸다.
+    판단: 마지막 값이 직전 구간 중앙값의 40% 미만으로 뚝 떨어지면 미집계로 보고 제거.
+    """
+    y = list(y)
+    if len(y) < 8:
+        return y, 0
+    trimmed = 0
+    # 최대 마지막 3점까지 검사
+    for _ in range(3):
+        if len(y) < 8:
+            break
+        body_median = float(np.median(y[-8:-1]))
+        if body_median > 0 and y[-1] < 0.4 * body_median:
+            y = y[:-1]
+            trimmed += 1
+        else:
+            break
+    return y, trimmed
+
+
+def extract_signals(series, rising_count=0, top_count=0, has_related=True,
+                    trim_tail=True):
     """
     시계열 → 양적/음적 원신호 딕셔너리.
-    series: 관심도 시계열(list/array, 0~100)
-    rising_count: 관련 '급상승' 검색어 수(있으면)
-    top_count: 관련 '고정 인기' 검색어 수(있으면)
+    trim_tail: 구글 트렌드 마지막 미집계 구간을 잘라낼지(기본 True).
     """
     y = np.asarray(series, dtype=float)
+    trimmed = 0
+    if trim_tail:
+        y_list, trimmed = _trim_incomplete_tail(y)
+        y = np.asarray(y_list, dtype=float)
     n = len(y)
     if n < 4:
         return None
@@ -45,17 +71,38 @@ def extract_signals(series, rising_count=0, top_count=0):
     recent_slope = _slope(recent)
     peak = y.max()
     cur = y[-1]
-    # 정규화
     scale = max(peak, 1.0)
+
+    # 고점 대비를 '단일 최고점'이 아니라 '구간 평균 비교'로 (스파이크 내성)
+    # 최근 1/3 구간 평균 vs 이전 2/3 구간 평균
+    third = max(2, n // 3)
+    recent_mean = float(np.mean(y[-third:]))
+    earlier_mean = float(np.mean(y[:-third])) if n > third else recent_mean
+    trend_ratio = (recent_mean - earlier_mean) / scale   # 양=최근이 더 높음(상승추세)
+
+    # 스파이크 감지
+    if n >= 6:
+        tail = y[-5:-1]
+        spike = float((cur - np.mean(tail)) / scale) if len(tail) else 0.0
+        sustained = _slope(y[-8:]) / scale if n >= 8 else recent_slope / scale
+    else:
+        spike, sustained = 0.0, recent_slope / scale
+
     return {
-        "recent_slope": recent_slope / scale,     # 최근 기울기(양=상승)
-        "full_slope": full_slope / scale,         # 전체 기울기
-        "from_peak": (cur - peak) / scale,        # 고점 대비(음=하락)
-        "accel": (recent_slope - full_slope) / scale,  # 가속(최근이 더 가파른가)
-        "cur_level": cur / scale,                 # 현재 수준
-        "volatility": float(np.std(np.diff(y)) / scale),  # 변동성
-        "rising_count": rising_count,             # 급상승 관련어(양적)
-        "top_count": top_count,                   # 고정 인기어(포화 신호)
+        "recent_slope": recent_slope / scale,
+        "full_slope": full_slope / scale,
+        "from_peak": (cur - peak) / scale,
+        "trend_ratio": trend_ratio,            # 구간평균 비교(스파이크 내성 추세)
+        "recent_mean": recent_mean / scale,
+        "accel": (recent_slope - full_slope) / scale,
+        "cur_level": cur / scale,
+        "volatility": float(np.std(np.diff(y)) / scale),
+        "rising_count": rising_count,
+        "top_count": top_count,
+        "has_related": has_related,
+        "spike": spike,
+        "sustained": sustained,
+        "trimmed_tail": trimmed,
     }
 
 
@@ -64,17 +111,19 @@ class ThesisCore(Core):
     def judge(self, context):
         s = context["signals"]
         fb = context.get("feedback", 0.0)
-        # 양적 점수: 최근 상승 + 가속 + 급상승어 + 현재수준
-        score = (2.0 * max(0, s["recent_slope"])
-                 + 1.5 * max(0, s["accel"])
-                 + 0.3 * np.tanh(s["rising_count"] / 5.0)
-                 + 0.5 * s["cur_level"])
-        # 되먹임: 합이 너무 낙관이면 살짝 눌러 스스로 조정
+        # 급상승어 신호는 데이터가 실제 있을 때만 반영(없으면 0 넣지 않고 제외)
+        rising_term = 0.3 * np.tanh(s["rising_count"] / 5.0) if s.get("has_related") else 0.0
+        score = (1.5 * max(0, s["recent_slope"])
+                 + 1.5 * max(0, s.get("trend_ratio", 0))
+                 + 1.0 * max(0, s["accel"])
+                 + rising_term
+                 + 0.3 * s["cur_level"])
         score = score - 0.2 * max(0, fb)
         conf = float(np.clip(abs(s["recent_slope"]) * 3, 0.1, 0.95))
+        rel = f", 급상승어 {s['rising_count']}" if s.get("has_related") else ", 급상승어 N/A"
         return Judgment(stance=float(np.tanh(score)), confidence=conf,
                         grounds=f"양적: 최근기울기 {s['recent_slope']:+.3f}, "
-                                f"가속 {s['accel']:+.3f}, 급상승어 {s['rising_count']}")
+                                f"가속 {s['accel']:+.3f}{rel}")
 
     def observe(self, other, context):
         # 정이 합(또는 반)을 관측: 내 양적 확신 대비 상대가 얼마나 낮은가
@@ -93,9 +142,9 @@ class AntithesisCore(Core):
         saturation = np.tanh(max(0, s["top_count"] - s["rising_count"]) / 5.0)
         # 정점 신호: 아직 높은 수준(cur_level 큼)인데 가속이 음(꺾임) → 강한 음적
         peaking = max(0, -s["accel"]) * s["cur_level"] * 2.0
-        score = (2.0 * max(0, -s["recent_slope"])
-                 + 2.0 * max(0, -s["from_peak"])
-                 + 1.5 * max(0, -s["accel"])
+        score = (1.5 * max(0, -s["recent_slope"])
+                 + 1.5 * max(0, -s.get("trend_ratio", 0))
+                 + 1.0 * max(0, -s["accel"])
                  + 1.5 * peaking
                  + 0.5 * saturation
                  + 0.3 * s["volatility"])
@@ -137,8 +186,11 @@ def diagnose_phase(synthesis_stance, tension, equilibrium, signals=None):
     평형 안 됐으면(양·음 팽팽) 전환점/불확실로 정직하게.
     signals 주어지면 정점(높은데 꺾임) 특별 감지.
     """
-    # 정점 특별 감지: 아직 높은 수준인데 가속이 음(꺾이기 시작)
+    # 스파이크 감지: 마지막 점만 튀고 지속 추세는 약함 → 일시적
     if signals is not None:
+        if signals.get("spike", 0) > 0.4 and signals.get("sustained", 0) < 0.1:
+            return "일시적 급등·스파이크 (지속 상승 아님 — 뉴스성 반짝일 가능성)"
+        # 정점 특별 감지: 아직 높은 수준인데 가속이 음(꺾이기 시작)
         if signals["cur_level"] > 0.7 and signals["accel"] < -0.01:
             return "정점·전환점 (높은 관심이 꺾이기 시작 — 진입 주의)"
     if not equilibrium:
