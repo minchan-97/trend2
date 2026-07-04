@@ -83,9 +83,102 @@ with st.sidebar.expander("📥 pkl 불러오기(업로드)"):
         st.success(f"{ok}개 pkl 복원, {skip}개 건너뜀")
         st.rerun()
 
-tab1, tab2 = st.tabs(["🔍 트렌드 분석", "📈 저장된 스냅샷"])
+tab1, tab_field, tab2 = st.tabs(["🔍 단일 키워드", "🕸️ 분야 종합 분석", "📈 저장된 스냅샷"])
 
-# ── 탭1: 분석 ──────────────────────────────────────
+# ── 탭 분야 종합 분석 ──────────────────────────────
+with tab_field:
+    st.subheader("분야 종합 분석")
+    st.caption("키워드 하나 → LLM이 연관 키워드 확장 → 각각 트렌드 수집 → "
+               "평형 엔진이 종합 판단. '이 분야가 어디로 가는가'를 입체적으로.")
+    seed = st.text_input("분야 키워드", value="생성형 AI", key="field_seed")
+    fc1, fc2 = st.columns(2)
+    fgeo = fc1.selectbox("지역", ["전세계", "KR", "US"], key="field_geo")
+    fgeo_code = {"전세계": "", "KR": "KR", "US": "US"}[fgeo]
+    n_kw = fc2.slider("연관 키워드 수", 4, 10, 6, key="field_n")
+    fkey = st.text_input("OpenAI Key (키워드 확장 + 속기)", type="password", key="field_key")
+
+    if st.button("분야 분석 시작", type="primary", key="field_run"):
+        if not fkey:
+            st.warning("OpenAI 키가 필요합니다(연관 키워드 확장용).")
+        else:
+            try:
+                from field_analysis import (expand_keywords, judge_one,
+                                            synthesize_field, scribe_field)
+                from trend_data import fetch_trend
+                # 1) 키워드 확장
+                with st.spinner("연관 키워드 확장 중..."):
+                    keywords = expand_keywords(seed, fkey, n=n_kw)
+                st.write("**탐색 키워드:**", ", ".join(keywords))
+
+                # 2~3) 각 키워드 트렌드 수집 + 국면 판정
+                per_kw = []
+                prog = st.progress(0)
+                for i, kw in enumerate(keywords):
+                    try:
+                        snap = fetch_trend(kw, timeframe="today 12-m", geo=fgeo_code)
+                        res = judge_one(snap["series"], snap.get("rising_count", 0),
+                                        snap.get("top_count", 0),
+                                        snap.get("has_related", False))
+                        if res:
+                            per_kw.append({"keyword": kw, "stance": res["stance"],
+                                           "phase": res["phase"], "series": snap["series"]})
+                    except Exception as e:
+                        st.caption(f"⚠️ '{kw}' 수집 실패: {e}")
+                    prog.progress((i + 1) / len(keywords))
+
+                if not per_kw:
+                    st.error("트렌드를 하나도 못 받았습니다(네트워크/pytrends 확인).")
+                else:
+                    # 4) 종합
+                    field = synthesize_field(per_kw)
+                    st.session_state["field_result"] = {
+                        "seed": seed, "field": field, "per_kw": per_kw, "key": fkey,
+                    }
+            except Exception as e:
+                st.error(f"분석 실패: {e}")
+
+    # 결과 표시(세션 유지)
+    fr = st.session_state.get("field_result")
+    if fr:
+        field = fr["field"]
+        st.markdown("---")
+        if "재편" in field["phase"]:
+            st.warning(f"### 종합 국면: {field['phase']}")
+        elif "성장" in field["phase"]:
+            st.success(f"### 종합 국면: {field['phase']}")
+        else:
+            st.info(f"### 종합 국면: {field['phase']}")
+
+        cc1, cc2, cc3 = st.columns(3)
+        cc1.metric("📈 상승 축", len(field["up_keywords"]))
+        cc2.metric("📉 하락 축", len(field["down_keywords"]))
+        cc3.metric("➡️ 횡보 축", len(field["flat_keywords"]))
+
+        if field["up_keywords"]:
+            st.write("**📈 오르는 축:**", ", ".join(field["up_keywords"]))
+        if field["down_keywords"]:
+            st.write("**📉 식는 축:**", ", ".join(field["down_keywords"]))
+        if field["flat_keywords"]:
+            st.write("**➡️ 횡보:**", ", ".join(field["flat_keywords"]))
+
+        with st.expander("키워드별 상세 국면 + 그래프"):
+            for k in fr["per_kw"]:
+                st.write(f"**{k['keyword']}** — {k['phase']} ({k['stance']:+.2f})")
+                st.line_chart(k["series"])
+
+        # 속기사
+        if st.button("🖋️ 종합 해설 생성", key="field_scribe"):
+            try:
+                from field_analysis import scribe_field
+                with st.spinner("종합 판단을 문장으로..."):
+                    text = scribe_field(fr["seed"], field, fr["per_kw"], fr["key"])
+                st.session_state["field_scribe_text"] = text
+            except Exception as e:
+                st.error(f"속기 실패: {e}")
+        if st.session_state.get("field_scribe_text"):
+            st.info(st.session_state["field_scribe_text"])
+
+# ── 탭1: 단일 키워드 분석 ──────────────────────────
 with tab1:
     kw = st.text_input("키워드", value="생성형 AI")
     col1, col2, col3 = st.columns(3)
