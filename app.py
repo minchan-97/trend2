@@ -123,7 +123,6 @@ with tab1:
                     snap = fetch_trend(kw, geo=geo_code)
                 series = snap["series"]
                 rising, top = snap["rising_count"], snap["top_count"]
-                # 저장
                 snapshots.append(snap)
                 save_snapshots(snapshots, PKL_PATH)
                 st.success(f"수집 완료 ({len(series)}포인트) — 스냅샷 저장됨")
@@ -138,51 +137,70 @@ with tab1:
                 st.warning("데이터가 너무 짧습니다(최소 4포인트).")
             else:
                 phase, r, eng = analyze(sig)
-                st.line_chart(series)
-                # 국면 결과
-                if "불확실" in phase or "전환점" in phase:
-                    st.warning(f"**국면: {phase}**")
-                else:
-                    st.success(f"**국면: {phase}**")
+                # ★ 결과를 세션에 저장 → 이후 키 입력·재실행에도 안 날아감
+                st.session_state["result"] = {
+                    "kw": kw, "series": series, "phase": phase,
+                    "thesis": r["thesis"].stance, "antithesis": r["antithesis"].stance,
+                    "synthesis": r["synthesis"].stance,
+                    "grounds_t": r["thesis"].grounds, "grounds_a": r["antithesis"].grounds,
+                    "grounds_s": r["synthesis"].grounds,
+                    "survival": r["survival"], "eq": eng.is_equilibrium(),
+                }
 
-                c1, c2, c3 = st.columns(3)
-                c1.metric("정(양적)", f"{r['thesis'].stance:+.2f}")
-                c2.metric("반(음적)", f"{r['antithesis'].stance:+.2f}")
-                c3.metric("합(통합)", f"{r['synthesis'].stance:+.2f}")
+    # ── 결과 표시 (세션에서 읽음 → 재실행돼도 유지) ──────────
+    res = st.session_state.get("result")
+    if res:
+        st.line_chart(res["series"])
+        if "불확실" in res["phase"] or "전환점" in res["phase"]:
+            st.warning(f"**국면: {res['phase']}**")
+        else:
+            st.success(f"**국면: {res['phase']}**")
 
-                with st.expander("판단 근거(정·반·합)"):
-                    st.write("**정(양적 신호):**", r["thesis"].grounds)
-                    st.write("**반(음적 신호):**", r["antithesis"].grounds)
-                    st.write("**합(통합):**", r["synthesis"].grounds)
-                    st.write(f"**생존값(평형):** {r['survival']}")
-                    st.write(f"**평형 도달:** {eng.is_equilibrium()}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("정(양적)", f"{res['thesis']:+.2f}")
+        c2.metric("반(음적)", f"{res['antithesis']:+.2f}")
+        c3.metric("합(통합)", f"{res['synthesis']:+.2f}")
 
-                # LLM 속기(선택)
-                okey = st.text_input("OpenAI Key(속기, 선택)", type="password")
-                if okey and st.button("자연어 해설 생성"):
-                    try:
-                        from openai import OpenAI
-                        client = OpenAI(api_key=okey)
-                        facts = {
-                            "키워드": kw, "국면": phase,
-                            "양적_stance": round(r["thesis"].stance, 2),
-                            "음적_stance": round(r["antithesis"].stance, 2),
-                            "통합_stance": round(r["synthesis"].stance, 2),
-                            "평형": eng.is_equilibrium(),
-                        }
-                        prompt = (
-                            "너는 트렌드 분석 속기사다. 분석·추측하지 말고 "
-                            "아래 시스템이 계산한 결과를 자연스러운 한국어로 옮겨라. "
-                            "수치에 없는 예측을 지어내지 마라.\n\n"
-                            f"{facts}\n\n출력: 2~3문장 해설."
-                        )
-                        resp = client.chat.completions.create(
-                            model="gpt-4o-mini",
-                            messages=[{"role": "user", "content": prompt}],
-                            temperature=0.1)
-                        st.info(resp.choices[0].message.content)
-                    except Exception as e:
-                        st.error(f"속기 실패: {e}")
+        with st.expander("판단 근거(정·반·합)"):
+            st.write("**정(양적 신호):**", res["grounds_t"])
+            st.write("**반(음적 신호):**", res["grounds_a"])
+            st.write("**합(통합):**", res["grounds_s"])
+            st.write(f"**생존값(평형):** {res['survival']}")
+            st.write(f"**평형 도달:** {res['eq']}")
+
+        # LLM 속기(선택) — 결과가 세션에 있으므로 키 넣어도 안 날아감
+        st.markdown("---")
+        st.write("**🖋️ 자연어 해설(속기, 선택)**")
+        okey = st.text_input("OpenAI Key", type="password", key="okey")
+        if st.button("자연어 해설 생성", key="scribe_btn"):
+            if not okey:
+                st.warning("OpenAI 키를 입력하세요.")
+            else:
+                try:
+                    from openai import OpenAI
+                    client = OpenAI(api_key=okey)
+                    facts = {
+                        "키워드": res["kw"], "국면": res["phase"],
+                        "양적_stance": round(res["thesis"], 2),
+                        "음적_stance": round(res["antithesis"], 2),
+                        "통합_stance": round(res["synthesis"], 2),
+                        "평형": res["eq"],
+                    }
+                    prompt = (
+                        "너는 트렌드 분석 속기사다. 분석·추측하지 말고 "
+                        "아래 시스템이 계산한 결과를 자연스러운 한국어로 옮겨라. "
+                        "수치에 없는 예측을 지어내지 마라.\n\n"
+                        f"{facts}\n\n출력: 2~3문장 해설."
+                    )
+                    resp = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.1)
+                    st.session_state["scribe"] = resp.choices[0].message.content
+                except Exception as e:
+                    st.error(f"속기 실패: {e}")
+        if st.session_state.get("scribe"):
+            st.info(st.session_state["scribe"])
 
 # ── 탭2: 저장된 스냅샷 ──────────────────────────────
 with tab2:
