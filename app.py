@@ -88,11 +88,16 @@ tab1, tab2 = st.tabs(["🔍 트렌드 분석", "📈 저장된 스냅샷"])
 # ── 탭1: 분석 ──────────────────────────────────────
 with tab1:
     kw = st.text_input("키워드", value="생성형 AI")
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     source = col1.radio("데이터 소스",
                         ["구글 트렌드(pytrends)", "가상 데이터(로직 테스트)"])
     geo = col2.selectbox("지역", ["전세계", "KR", "US"])
     geo_code = {"전세계": "", "KR": "KR", "US": "US"}[geo]
+    tf_label = col3.selectbox("기간", ["1년(권장)", "3개월", "5년"])
+    timeframe = {"1년(권장)": "today 12-m", "3개월": "today 3-m",
+                 "5년": "today 5-y"}[tf_label]
+    st.caption("💡 트렌드 국면은 1년 이상으로 봐야 이벤트성 스파이크에 안 흔들려요. "
+               "3개월은 하루 급등이 고점이 돼 대부분 '하락'으로 보일 수 있어요.")
 
     series = None
     rising = top = 0
@@ -120,7 +125,7 @@ with tab1:
             try:
                 from trend_data import fetch_trend
                 with st.spinner("구글 트렌드 수집 중..."):
-                    snap = fetch_trend(kw, geo=geo_code)
+                    snap = fetch_trend(kw, timeframe=timeframe, geo=geo_code)
                 series = snap["series"]
                 rising, top = snap["rising_count"], snap["top_count"]
                 snapshots.append(snap)
@@ -132,7 +137,10 @@ with tab1:
                 series = None
 
         if series is not None:
-            sig = extract_signals(series, rising, top)
+            has_rel = True
+            if source == "구글 트렌드(pytrends)":
+                has_rel = snap.get("has_related", (rising + top) > 0)
+            sig = extract_signals(series, rising, top, has_related=has_rel)
             if sig is None:
                 st.warning("데이터가 너무 짧습니다(최소 4포인트).")
             else:
